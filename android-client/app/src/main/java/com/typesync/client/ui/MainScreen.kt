@@ -18,6 +18,9 @@ import com.typesync.client.model.Message
 import com.typesync.client.network.NsdDiscovery
 import com.typesync.client.network.WebSocketClient
 import com.typesync.client.ui.theme.ThemeMode
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 data class DiscoveredService(val name: String, val host: String, val port: Int)
 
@@ -38,8 +41,15 @@ fun MainScreen(
     var discoveredServices by remember { mutableStateOf(listOf<DiscoveredService>()) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var macClipboard by remember { mutableStateOf<String?>(null) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("typesync_settings", Context.MODE_PRIVATE) }
+    var autoClearSeconds by remember { mutableIntStateOf(prefs.getInt("auto_clear_seconds", 0)) }
+
+    // Auto-clear input after idle
+    val coroutineScope = rememberCoroutineScope()
+    var autoClearJob by remember { mutableStateOf<Job?>(null) }
 
     // Setup WebSocket callbacks
     LaunchedEffect(wsClient) {
@@ -84,11 +94,57 @@ fun MainScreen(
         wsClient.send(msg.toJson())
     }
 
+    // Settings dialog
+    if (showSettingsDialog) {
+        var tempSeconds by remember { mutableStateOf(autoClearSeconds.toString()) }
+        AlertDialog(
+            onDismissRequest = { showSettingsDialog = false },
+            title = { Text("设置") },
+            text = {
+                Column {
+                    Text("停止输入后自动清空输入框", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "设为 0 表示关闭此功能",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tempSeconds,
+                        onValueChange = { tempSeconds = it.filter { c -> c.isDigit() } },
+                        label = { Text("秒数") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val value = tempSeconds.toIntOrNull() ?: 0
+                    autoClearSeconds = value
+                    prefs.edit().putInt("auto_clear_seconds", value).apply()
+                    showSettingsDialog = false
+                }) {
+                    Text("确定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSettingsDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("TypeSync") },
                 actions = {
+                    IconButton(onClick = { showSettingsDialog = true }) {
+                        Text("⚙️")
+                    }
                     IconButton(onClick = {
                         val next = when (themeMode) {
                             ThemeMode.AUTO -> ThemeMode.LIGHT
@@ -217,6 +273,15 @@ fun MainScreen(
                             if (insertText.isNotEmpty()) {
                                 sendMessage(Message.text(insertText))
                             }
+                        }
+                    }
+
+                    // Auto-clear after idle
+                    if (autoClearSeconds > 0 && newText.isNotEmpty()) {
+                        autoClearJob?.cancel()
+                        autoClearJob = coroutineScope.launch {
+                            delay(autoClearSeconds * 1000L)
+                            textFieldValue = TextFieldValue("")
                         }
                     }
                 },
